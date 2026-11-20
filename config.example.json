@@ -1,0 +1,16 @@
+{
+  "YOUTUBE_PLAYLIST_URL": "",
+  "MUSIC_DIR": "",
+  "ACOUSTID_API_KEY": "",
+  "PROXY_URL": "",
+  "BROWSER_FOR_COOKIES": "",
+  "OUTPUT_FORMAT": "mp3",
+  "MP3_BITRATE": "320k",
+  "DURATION_TOLERANCE_SEC": 3,
+  "FUZZY_SIMILARITY_THRESHOLD": 92,
+  "DUPLICATES_SUBDIR": "_duplicates",
+  "LIBRARY_INDEX_FILE": "library_index.json",
+  "DOWNLOADED_IDS_FILE": "downloaded_ids.txt",
+  "AUTO_CHECK_ON_START": true,
+  "AUTO_DOWNLOAD_ON_START": false
+}

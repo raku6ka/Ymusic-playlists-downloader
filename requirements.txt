@@ -1,0 +1,7 @@
+customtkinter
+requests
+mutagen
+rapidfuzz
+transliterate
+yt-dlp
+pyinstaller

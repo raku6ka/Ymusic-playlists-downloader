@@ -1,0 +1,21 @@
+# Личные данные (живут в %APPDATA%\YTMusicSync, но на всякий случай)
+config.json
+library_index.json
+downloaded_ids.txt
+sync.log
+cookies.txt
+*.log
+
+# Сборка и окружение
+build/
+dist/
+release/
+*.spec
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Внешние бинарники (скачиваются отдельно)
+bin/
+*.exe
