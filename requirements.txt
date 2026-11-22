@@ -3,5 +3,5 @@ requests
 mutagen
 rapidfuzz
 transliterate
-yt-dlp
+yt-dlp[default]
 pyinstaller

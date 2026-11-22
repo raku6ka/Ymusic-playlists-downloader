@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import os
 import shutil
@@ -11,7 +11,7 @@ import requests
 
 import sync_music as core
 
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.0.1"
 # Замените на ваш логин и имя репозитория после публикации на GitHub, например "login/YTMusicSync"
 GITHUB_REPO = "raku6ka/Ymusic-playlists-downloader"
 

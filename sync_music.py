@@ -367,8 +367,17 @@ def resolve_binary(name: str) -> Optional[str]:
 
 
 def check_binaries() -> dict[str, Optional[str]]:
-    result = {n: resolve_binary(n) for n in ("ffmpeg", "ffprobe", "fpcalc")}
+    result = {n: resolve_binary(n) for n in ("ffmpeg", "ffprobe", "fpcalc", "deno")}
     for name, path in result.items():
+        if name == "deno":
+            if path:
+                log_ok("deno: найден")
+            elif resolve_binary("node"):
+                log_ok("node: найден (используется вместо deno)")
+            else:
+                log_warn("deno/node не найден: YouTube может отвечать 'Requested format is not available'. "
+                         "Поместите deno.exe в папку bin/.")
+            continue
         if path:
             log_ok(f"{name}: найден")
             bin_dir = str(Path(path).parent)
@@ -854,6 +863,13 @@ def _run_ytdlp(cfg: dict[str, Any], tail_args: list[str], timeout: int = 300) ->
     if proxy:
         base += ["--proxy", proxy]
     base += ["--no-warnings", "--ignore-errors"]
+    # YouTube требует JavaScript-рантайм (deno/node) для расшифровки ссылок на форматы.
+    for runtime in ("deno", "node"):
+        rt_path = resolve_binary(runtime)
+        if rt_path:
+            base += ["--js-runtimes", f"{runtime}:{rt_path}"]
+            break
+    base += ["--remote-components", "ejs:github"]
     ffmpeg = resolve_binary("ffmpeg")
     if ffmpeg:
         base += ["--ffmpeg-location", str(Path(ffmpeg).parent)]

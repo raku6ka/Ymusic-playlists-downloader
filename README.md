@@ -1,4 +1,4 @@
-﻿# YTMusicSync
+# YTMusicSync
 
 🇬🇧 [English](#english) · 🇷🇺 [Русский](#русский)
 
@@ -30,7 +30,7 @@ Paste a YouTube Music playlist link, pick a folder, press one button – the app
 ### Quick start (ready-made build)
 
 1. Download the latest `YTMusicSync-vX.Y.Z.zip` from the **Releases** page and unpack it.
-2. Make sure the `bin` folder next to `YTMusicSync.exe` contains `ffmpeg.exe`, `ffprobe.exe` and `fpcalc.exe` (see [Dependencies](#dependencies)).
+2. Make sure the `bin` folder next to `YTMusicSync.exe` contains `ffmpeg.exe`, `ffprobe.exe`, `fpcalc.exe` and `deno.exe` (see [Dependencies](#dependencies)).
 3. Run `YTMusicSync.exe`.
 4. Paste the playlist link (**Paste** button), choose the music folder (**Browse...**), pick **MP3** or **FLAC**.
 5. Press **Save settings**, then **Sync now**.
@@ -65,10 +65,11 @@ cookies.txt          optional cookies
 
 ### <a id="dependencies"></a>Dependencies
 
-The app needs three external tools placed in a `bin` folder next to the executable (or available in `PATH`):
+The app needs four external tools placed in a `bin` folder next to the executable (or available in `PATH`):
 
 - [ffmpeg and ffprobe](https://ffmpeg.org/download.html)
 - `fpcalc` from [Chromaprint](https://acoustid.org/chromaprint)
+- `deno` from [deno.com](https://deno.com) (required by yt-dlp to resolve YouTube formats)
 
 ### Run from source
 
@@ -125,7 +126,7 @@ This tool is intended for personal use, for example to back up music you have th
 ### Быстрый старт (готовая сборка)
 
 1. Скачайте свежий `YTMusicSync-vX.Y.Z.zip` на странице **Releases** и распакуйте.
-2. Убедитесь, что в папке `bin` рядом с `YTMusicSync.exe` лежат `ffmpeg.exe`, `ffprobe.exe` и `fpcalc.exe` (см. [Зависимости](#зависимости)).
+2. Убедитесь, что в папке `bin` рядом с `YTMusicSync.exe` лежат `ffmpeg.exe`, `ffprobe.exe`, `fpcalc.exe` и `deno.exe` (см. [Зависимости](#зависимости)).
 3. Запустите `YTMusicSync.exe`.
 4. Вставьте ссылку на плейлист (кнопка **Вставить**), выберите папку (**Обзор...**), укажите **MP3** или **FLAC**.
 5. Нажмите **Сохранить настройки**, затем **Синхронизировать сейчас**.
@@ -160,10 +161,11 @@ cookies.txt          cookies (по желанию)
 
 ### Зависимости
 
-Программе нужны три внешние утилиты в папке `bin` рядом с исполняемым файлом (или в `PATH`):
+Программе нужны четыре внешние утилиты в папке `bin` рядом с исполняемым файлом (или в `PATH`):
 
 - [ffmpeg и ffprobe](https://ffmpeg.org/download.html)
 - `fpcalc` из [Chromaprint](https://acoustid.org/chromaprint)
+- `deno` с [deno.com](https://deno.com) (нужен yt-dlp для получения форматов YouTube)
 
 ### Запуск из исходников
 
