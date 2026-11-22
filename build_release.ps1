@@ -52,7 +52,7 @@ requests
 mutagen
 rapidfuzz
 transliterate
-yt-dlp
+yt-dlp[default]
 pyinstaller
 '@
 [IO.File]::WriteAllText("$root\config.example.json", $configExample, $utf8)
@@ -66,8 +66,9 @@ python -m pip install -r requirements.txt
 
 Remove-Item -Recurse -Force "$root\build", "$root\release", "$root\YTMusicSync.spec" -ErrorAction SilentlyContinue
 
+Get-Process YTMusicSync -ErrorAction SilentlyContinue | Stop-Process -Force
 python -m PyInstaller --noconfirm --onedir --windowed --name YTMusicSync --distpath release `
-    --collect-all customtkinter --collect-all yt_dlp --collect-all transliterate gui.py
+    --collect-all customtkinter --hidden-import yt_dlp gui.py
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller завершился с ошибкой" }
 
 # --- 3. Копирование bin ---------------------------------------------------
@@ -76,12 +77,12 @@ $binDst = "$root\release\YTMusicSync\bin"
 if (Test-Path $binSrc) {
     New-Item -ItemType Directory -Force -Path $binDst | Out-Null
     Copy-Item "$binSrc\*" $binDst -Recurse -Force
-    foreach ($f in "ffmpeg.exe", "ffprobe.exe", "fpcalc.exe") {
+    foreach ($f in "ffmpeg.exe", "ffprobe.exe", "fpcalc.exe", "deno.exe") {
         if (Test-Path "$binDst\$f") { Write-Host "[OK] bin\$f" -ForegroundColor Green }
         else { Write-Host "[!!] bin\$f не найден" -ForegroundColor Yellow }
     }
 } else {
-    Write-Host "[!!] Папка $binSrc не найдена - ffmpeg/ffprobe/fpcalc не скопированы" -ForegroundColor Yellow
+    Write-Host "[!!] Папка $binSrc не найдена - ffmpeg/ffprobe/fpcalc/deno не скопированы" -ForegroundColor Yellow
 }
 
 # Убираем артефакты сборки, содержащие абсолютные пути
