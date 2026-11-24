@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-sync_music.py - движок синхронизации плейлиста YouTube Music с локальной папкой.
-Все личные настройки, индекс и логи хранятся исключительно в %APPDATA%\\YTMusicSync.
-"""
 
 from __future__ import annotations
 
@@ -26,13 +22,14 @@ from typing import Any, Callable, Iterable, Optional
 import requests
 from mutagen import File as MutagenFile
 from mutagen.flac import FLAC, Picture
-from mutagen.id3 import APIC, ID3, ID3NoHeaderError, TALB, TDRC, TIT2, TPE1
+from mutagen.id3 import (APIC, ID3, ID3NoHeaderError, TALB, TBPM, TCON, TCOP, TDRC, TIT2,
+                         TPE1, TPE2, TPOS, TPUB, TRCK, TSRC)
 from mutagen.mp3 import MP3
 from rapidfuzz import fuzz
 
 try:
     from transliterate import translit
-except Exception:  # библиотека необязательна, есть запасная таблица
+except Exception:  # библиотека необязательна, вроде есть запасная таблица
     translit = None
 
 AUDIO_EXTENSIONS = {".mp3", ".flac", ".m4a", ".opus", ".ogg", ".wav", ".aac"}
@@ -73,10 +70,6 @@ def get_bundle_dir() -> Path:
         return Path(os.path.dirname(sys.executable)).resolve()
     return Path(__file__).resolve().parent
 
-
-# ---------------------------------------------------------------------------
-# Логирование
-# ---------------------------------------------------------------------------
 
 LOG_FILE_HANDLE: Any = None
 GUI_LOG_CALLBACK: Optional[Callable[[str, str], None]] = None
@@ -130,9 +123,6 @@ def log_dry(msg: str) -> None:
     log(msg, "DRY")
 
 
-# ---------------------------------------------------------------------------
-# Конфиг
-# ---------------------------------------------------------------------------
 
 def get_config_path() -> Path:
     return get_app_data_dir() / CONFIG_FILE
@@ -161,9 +151,6 @@ def save_config(cfg: dict[str, Any]) -> None:
         json.dump(clean, fh, ensure_ascii=False, indent=2)
 
 
-# ---------------------------------------------------------------------------
-# Нормализация имён
-# ---------------------------------------------------------------------------
 
 _TRANSLIT_MAP = {
     "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ё": "e",
@@ -268,10 +255,6 @@ def similarity(a: str, b: str) -> float:
     return float(fuzz.ratio(a, b))
 
 
-# ---------------------------------------------------------------------------
-# Индекс фонотеки
-# ---------------------------------------------------------------------------
-
 @dataclass
 class LibraryEntry:
     path: str
@@ -289,6 +272,8 @@ class LibraryEntry:
     tags_ok: bool = False
     tags_checked: bool = False
     duplicated: bool = False
+    cover_tried: bool = False
+    meta_tried: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -348,10 +333,6 @@ class LibraryIndex:
             if not entry.duplicated and Path(entry.path).exists():
                 yield entry
 
-
-# ---------------------------------------------------------------------------
-# Внешние утилиты: bin/ рядом с .exe -> sys._MEIPASS -> PATH
-# ---------------------------------------------------------------------------
 
 def resolve_binary(name: str) -> Optional[str]:
     exe = f"{name}.exe" if os.name == "nt" else name
@@ -437,9 +418,6 @@ def compute_fingerprint(path: Path) -> tuple[str, float]:
     return str(data.get("fingerprint", "")), float(data.get("duration", 0.0) or 0.0)
 
 
-# ---------------------------------------------------------------------------
-# Теги
-# ---------------------------------------------------------------------------
 
 def read_tags(path: Path) -> dict[str, str]:
     info = {"artist": "", "title": "", "album": "", "year": ""}
@@ -534,11 +512,6 @@ def write_tags(path: Path, artist: str, title: str, album: str = "", year: str =
     except Exception as exc:
         log_warn(f"Не удалось записать теги в {path.name}: {exc}")
         return False
-
-
-# ---------------------------------------------------------------------------
-# Метаданные: AcoustID, iTunes, MusicBrainz
-# ---------------------------------------------------------------------------
 
 def acoustid_lookup(fingerprint: str, duration: float, api_key: str) -> Optional[dict[str, Any]]:
     if not api_key or not fingerprint:
@@ -680,9 +653,507 @@ def download_image(url: str) -> Optional[tuple[bytes, str]]:
     return resp.content, ctype
 
 
-# ---------------------------------------------------------------------------
-# Индексация и локальные дубли
-# ---------------------------------------------------------------------------
+
+def has_cover(path: Path) -> bool:
+    """True, если в файле есть встроенная обложка. Для неподдерживаемых форматов True (пропуск)."""
+    ext = path.suffix.lower()
+    try:
+        if ext == ".mp3":
+            return bool(ID3(path).getall("APIC"))
+        if ext == ".flac":
+            return bool(FLAC(path).pictures)
+    except ID3NoHeaderError:
+        return False
+    except Exception:
+        return False
+    return True
+
+
+def embed_cover(path: Path, cover: tuple[bytes, str]) -> bool:
+    data, mime = cover
+    ext = path.suffix.lower()
+    try:
+        if ext == ".mp3":
+            try:
+                tags = ID3(path)
+            except ID3NoHeaderError:
+                tags = ID3()
+            tags.delall("APIC")
+            tags.add(APIC(encoding=3, mime=mime, type=3, desc="Cover", data=data))
+            tags.save(path)
+            return True
+        if ext == ".flac":
+            audio = FLAC(path)
+            pic = Picture()
+            pic.type = 3
+            pic.mime = mime
+            pic.desc = "Cover"
+            pic.data = data
+            audio.clear_pictures()
+            audio.add_picture(pic)
+            audio.save()
+            return True
+    except Exception as exc:
+        log_warn(f"  Не удалось встроить обложку в {path.name}: {exc}")
+    return False
+
+
+def deezer_cover_url(artist: str, title: str, duration: float = 0.0) -> str:
+    """Обложка из публичного поиска Deezer (ключ не нужен)."""
+    item = _deezer_match(artist, title, duration)
+    if not item:
+        return ""
+    album = item.get("album") or {}
+    return album.get("cover_xl") or album.get("cover_big") or album.get("cover_medium") or ""
+
+
+def find_cover(artist: str, title: str, duration: float = 0.0,
+               extra_urls: Iterable[str] = ()) -> Optional[tuple[bytes, str]]:
+    """Перебирает источники: iTunes -> Deezer -> MusicBrainz/CAA -> дополнительные (миниатюра YouTube)."""
+
+    def _valid(img: Optional[tuple[bytes, str]]) -> Optional[tuple[bytes, str]]:
+        return img if img and len(img[0]) > 2000 else None
+
+    meta = itunes_lookup(artist, title, duration)
+    time.sleep(API_PAUSE_SEC)
+    if meta and meta.get("cover_url"):
+        img = _valid(download_image(meta["cover_url"]))
+        if img:
+            return img
+    url = deezer_cover_url(artist, title, duration)
+    if url:
+        img = _valid(download_image(url))
+        if img:
+            return img
+    meta = musicbrainz_lookup(artist, title)
+    time.sleep(API_PAUSE_SEC)
+    if meta and meta.get("cover_url"):
+        img = _valid(download_image(meta["cover_url"]))
+        if img:
+            return img
+    for extra in extra_urls:
+        if extra:
+            img = _valid(download_image(extra))
+            if img:
+                return img
+    return None
+
+
+def _artist_title_for_file(path: Path, entry: Optional[LibraryEntry]) -> tuple[str, str]:
+    artist = (entry.artist if entry else "") or ""
+    title = (entry.title if entry else "") or ""
+    if not (artist and title):
+        tags = read_tags(path)
+        artist, title = tags["artist"], tags["title"]
+    if not (artist and title):
+        stem = strip_track_number_prefix(path.stem)
+        if " - " in stem:
+            left, right = stem.split(" - ", 1)
+            artist, title = artist or left.strip(), title or right.strip()
+        else:
+            title = title or stem
+    return clean_artist(artist), clean_title(title)
+
+
+def run_cover_check(cfg: dict[str, Any], stop_event: Optional[threading.Event] = None,
+                    progress_cb: Optional[Callable[[int, int], None]] = None,
+                    force: bool = False, dry_run: bool = False,
+                    index: Optional[LibraryIndex] = None) -> tuple[int, int]:
+    """Проходит по папке и добавляет обложки файлам, у которых их нет.
+    Возвращает (найдено без обложки, добавлено). force=True повторяет попытку и для тех,
+    где поиск уже раньше не дал результата."""
+    music_dir = Path(cfg.get("MUSIC_DIR") or "").expanduser()
+    if not cfg.get("MUSIC_DIR") or not music_dir.exists():
+        log_err("Папка музыки не найдена - проверка обложек пропущена.")
+        return 0, 0
+    own_index = index is None
+    if own_index:
+        index = LibraryIndex(get_app_data_dir() / cfg.get("LIBRARY_INDEX_FILE", "library_index.json"))
+        index.load()
+    log("=== Проверка обложек ===")
+    dup_name = cfg.get("DUPLICATES_SUBDIR", "_duplicates")
+    missing: list[Path] = []
+    for path in iter_audio_files(music_dir, dup_name):
+        if path.suffix.lower() not in (".mp3", ".flac"):
+            continue
+        entry = index.get(path)
+        if entry and entry.cover_tried and not force:
+            continue
+        if not has_cover(path):
+            missing.append(path)
+    if not missing:
+        log_ok("У всех треков есть обложки.")
+        return 0, 0
+    log(f"Треков без обложки: {len(missing)}")
+    added = 0
+    total = len(missing)
+    for i, path in enumerate(missing, 1):
+        if stop_event and stop_event.is_set():
+            log_warn("Проверка обложек остановлена пользователем.")
+            break
+        if progress_cb:
+            progress_cb(i - 1, total)
+        entry = index.get(path)
+        artist, title = _artist_title_for_file(path, entry)
+        if not title:
+            continue
+        if dry_run:
+            log_dry(f"  [dry-run] найти обложку: {path.name}")
+            continue
+        duration = (entry.duration if entry and entry.duration else read_audio_duration(path))
+        cover = find_cover(artist, title, duration)
+        if cover and embed_cover(path, cover):
+            added += 1
+            log_ok(f"  Обложка добавлена: {path.name}")
+        else:
+            log_warn(f"  Обложка не найдена: {path.name}")
+        if entry:
+            entry.cover_tried = True
+            try:
+                st = path.stat()
+                entry.size, entry.mtime = st.st_size, st.st_mtime
+            except OSError:
+                pass
+            index.put(entry)
+        if progress_cb:
+            progress_cb(i, total)
+        time.sleep(API_PAUSE_SEC)
+    if not dry_run and own_index:
+        index.save()
+    log_ok(f"Проверка обложек завершена. Добавлено: {added} из {total}.")
+    return total, added
+
+
+
+def _title_ok(a: str, b: str) -> bool:
+    """Строгое сравнение названий: ремиксы и другие версии не проходят."""
+    ka, kb = normalize_key(clean_title(a)), normalize_key(clean_title(b))
+    return bool(ka and kb) and similarity(ka, kb) >= 88
+
+
+def _artist_ok(a: str, b: str) -> bool:
+    if not a:
+        return True
+    if not b:
+        return False
+    ka, kb = normalize_key(a), normalize_key(b)
+    if ka and kb:
+        if similarity(ka, kb) >= 70:
+            return True
+        if len(ka) >= 3 and len(kb) >= 3 and (ka in kb or kb in ka):
+            return True
+    return float(fuzz.token_set_ratio(a.lower(), b.lower())) >= 80
+
+
+def _dur_ok(want: float, got: float, tol: float = 5.0) -> bool:
+    if want > 0 and got > 0:
+        return abs(want - got) <= tol
+    return True  # проверить нельзя
+
+
+def _itunes_full(artist: str, title: str, duration: float) -> Optional[dict[str, Any]]:
+    best, best_score = None, 0.0
+    for term in (f"{artist} {title}".strip(), title):
+        try:
+            resp = requests.get(
+                "https://itunes.apple.com/search",
+                params={"term": term, "media": "music", "entity": "song", "limit": 10},
+                timeout=REQUEST_TIMEOUT,
+            )
+            if resp.status_code != 200:
+                continue
+            results = resp.json().get("results") or []
+        except (requests.RequestException, ValueError):
+            continue
+        for item in results:
+            tname = item.get("trackName") or ""
+            if not _title_ok(title, tname):
+                continue
+            if not _artist_ok(artist, item.get("artistName") or ""):
+                continue
+            if not _dur_ok(duration, float(item.get("trackTimeMillis") or 0) / 1000.0):
+                continue
+            score = similarity(normalize_key(title), normalize_key(tname))
+            if score > best_score:
+                best_score, best = score, item
+        if best:
+            break
+        time.sleep(API_PAUSE_SEC)
+    if not best:
+        return None
+    artwork = (best.get("artworkUrl100") or best.get("artworkUrl60") or "")
+    artwork = artwork.replace("100x100bb", "1000x1000bb").replace("60x60bb", "1000x1000bb")
+    out: dict[str, Any] = {
+        "title": best.get("trackName") or "",
+        "artist": best.get("artistName") or "",
+        "album": best.get("collectionName") or "",
+        "album_artist": best.get("collectionArtistName") or best.get("artistName") or "",
+        "track_no": best.get("trackNumber") or 0,
+        "track_total": best.get("trackCount") or 0,
+        "disc_no": best.get("discNumber") or 0,
+        "disc_total": best.get("discCount") or 0,
+        "genre": best.get("primaryGenreName") or "",
+        "year": (best.get("releaseDate") or "")[:4],
+        "cover_url": artwork,
+    }
+    cid = best.get("collectionId")
+    if cid:
+        try:
+            r = requests.get("https://itunes.apple.com/lookup", params={"id": cid}, timeout=REQUEST_TIMEOUT)
+            if r.status_code == 200:
+                res = r.json().get("results") or []
+                if res:
+                    out["copyright"] = res[0].get("copyright") or ""
+        except (requests.RequestException, ValueError):
+            pass
+    return out
+
+
+def _deezer_match(artist: str, title: str, duration: float) -> Optional[dict[str, Any]]:
+    for query in (f'artist:"{artist}" track:"{title}"', f"{artist} {title}".strip(), title):
+        if not query.strip():
+            continue
+        try:
+            resp = requests.get("https://api.deezer.com/search",
+                                params={"q": query, "limit": 5}, timeout=REQUEST_TIMEOUT)
+            if resp.status_code != 200:
+                continue
+            items = resp.json().get("data") or []
+        except (requests.RequestException, ValueError):
+            continue
+        for item in items:
+            if not _title_ok(title, item.get("title") or ""):
+                continue
+            if not _artist_ok(artist, (item.get("artist") or {}).get("name") or ""):
+                continue
+            if not _dur_ok(duration, float(item.get("duration") or 0)):
+                continue
+            return item
+    return None
+
+
+def _deezer_get(path: str) -> dict[str, Any]:
+    try:
+        resp = requests.get(f"https://api.deezer.com/{path}", timeout=REQUEST_TIMEOUT)
+        if resp.status_code == 200:
+            data = resp.json()
+            if isinstance(data, dict) and not data.get("error"):
+                return data
+    except (requests.RequestException, ValueError):
+        pass
+    return {}
+
+
+def _deezer_full(artist: str, title: str, duration: float) -> Optional[dict[str, Any]]:
+    item = _deezer_match(artist, title, duration)
+    if not item:
+        return None
+    album = item.get("album") or {}
+    out: dict[str, Any] = {
+        "title": item.get("title") or "",
+        "artist": (item.get("artist") or {}).get("name") or "",
+        "album": album.get("title") or "",
+        "cover_url": album.get("cover_xl") or album.get("cover_big") or "",
+    }
+    track = _deezer_get(f"track/{item.get('id')}")
+    if track:
+        out["isrc"] = track.get("isrc") or ""
+        bpm = track.get("bpm") or 0
+        out["bpm"] = int(round(float(bpm))) if bpm else 0
+        out["track_no"] = track.get("track_position") or 0
+        out["disc_no"] = track.get("disk_number") or 0
+        out["year"] = (track.get("release_date") or "")[:4]
+    album_id = (track.get("album") or album).get("id") if (track or album) else None
+    if album_id:
+        alb = _deezer_get(f"album/{album_id}")
+        if alb:
+            genres = (alb.get("genres") or {}).get("data") or []
+            out["genre"] = genres[0].get("name", "") if genres else ""
+            out["publisher"] = alb.get("label") or ""
+            out["track_total"] = alb.get("nb_tracks") or 0
+            out["album_artist"] = (alb.get("artist") or {}).get("name") or ""
+    return out
+
+
+_ALBUM_GROUP = ("album", "album_artist", "track_no", "track_total", "disc_no", "disc_total", "year")
+
+
+def fetch_full_metadata(artist: str, title: str, duration: float = 0.0) -> Optional[dict[str, Any]]:
+    """Собирает расширенные метаданные из iTunes и Deezer. Данные об альбоме и номерах
+    треков берутся из одного источника, чтобы не смешивать разные издания."""
+    it = _itunes_full(artist, title, duration)
+    time.sleep(API_PAUSE_SEC)
+    dz = _deezer_full(artist, title, duration)
+    time.sleep(API_PAUSE_SEC)
+    if not it and not dz:
+        return None
+    primary = it or dz or {}
+    meta = {k: v for k, v in primary.items() if v not in (None, "", 0)}
+    if it and dz:
+        for k, v in dz.items():
+            if k in _ALBUM_GROUP or v in (None, "", 0):
+                continue
+            if not meta.get(k):
+                meta[k] = v
+    return meta
+
+
+def write_full_tags(path: Path, meta: dict[str, Any], only_missing: bool = True) -> list[str]:
+    """Записывает расширенные теги в MP3/FLAC. При only_missing=True заполняет только пустые поля.
+    Возвращает список названий изменённых полей."""
+    ext = path.suffix.lower()
+    changed: list[str] = []
+
+    def pair(a: Any, b: Any) -> str:
+        try:
+            a_i, b_i = int(a or 0), int(b or 0)
+        except (TypeError, ValueError):
+            return ""
+        if a_i <= 0:
+            return ""
+        return f"{a_i}/{b_i}" if b_i > 0 else str(a_i)
+
+    try:
+        if ext == ".mp3":
+            try:
+                tags = ID3(path)
+            except ID3NoHeaderError:
+                tags = ID3()
+
+            def put(frame: str, cls: Any, value: Any, label: str) -> None:
+                if not value:
+                    return
+                cur = tags.get(frame)
+                if only_missing and cur is not None and str(cur).strip():
+                    return
+                tags.delall(frame)
+                tags.add(cls(encoding=3, text=[str(value)]))
+                changed.append(label)
+
+            put("TIT2", TIT2, meta.get("title"), "название")
+            put("TPE1", TPE1, meta.get("artist"), "исполнитель")
+            put("TALB", TALB, meta.get("album"), "альбом")
+            put("TPE2", TPE2, meta.get("album_artist"), "исп. альбома")
+            put("TRCK", TRCK, pair(meta.get("track_no"), meta.get("track_total")), "трек №")
+            put("TPOS", TPOS, pair(meta.get("disc_no"), meta.get("disc_total")), "диск №")
+            put("TCON", TCON, meta.get("genre"), "жанр")
+            put("TDRC", TDRC, meta.get("year"), "год")
+            put("TCOP", TCOP, meta.get("copyright"), "авторские права")
+            put("TPUB", TPUB, meta.get("publisher"), "издатель")
+            put("TSRC", TSRC, meta.get("isrc"), "ISRC")
+            put("TBPM", TBPM, meta.get("bpm"), "BPM")
+            if changed:
+                tags.save(path)
+        elif ext == ".flac":
+            audio = FLAC(path)
+
+            def putv(key: str, value: Any, label: str) -> None:
+                if not value:
+                    return
+                cur = audio.get(key)
+                if only_missing and cur and any(str(x).strip() for x in cur):
+                    return
+                audio[key] = [str(value)]
+                changed.append(label)
+
+            putv("title", meta.get("title"), "название")
+            putv("artist", meta.get("artist"), "исполнитель")
+            putv("album", meta.get("album"), "альбом")
+            putv("albumartist", meta.get("album_artist"), "исп. альбома")
+            putv("tracknumber", meta.get("track_no"), "трек №")
+            putv("tracktotal", meta.get("track_total"), "всего треков")
+            putv("discnumber", meta.get("disc_no"), "диск №")
+            putv("disctotal", meta.get("disc_total"), "всего дисков")
+            putv("genre", meta.get("genre"), "жанр")
+            putv("date", meta.get("year"), "год")
+            putv("copyright", meta.get("copyright"), "авторские права")
+            putv("organization", meta.get("publisher"), "издатель")
+            putv("isrc", meta.get("isrc"), "ISRC")
+            putv("bpm", meta.get("bpm"), "BPM")
+            if changed:
+                audio.save()
+    except Exception as exc:
+        log_warn(f"  Не удалось записать теги в {path.name}: {exc}")
+        return []
+    return changed
+
+
+def run_metadata_enrich(cfg: dict[str, Any], stop_event: Optional[threading.Event] = None,
+                        progress_cb: Optional[Callable[[int, int], None]] = None,
+                        dry_run: bool = False, force: bool = False,
+                        index: Optional[LibraryIndex] = None) -> tuple[int, int]:
+    """Дополняет теги файлов всей папки (только пустые поля). Возвращает (обработано, изменено).
+    Уже обработанные файлы пропускаются, поэтому процесс можно остановить и продолжить позже."""
+    music_dir = Path(cfg.get("MUSIC_DIR") or "").expanduser()
+    if not cfg.get("MUSIC_DIR") or not music_dir.exists():
+        log_err("Папка музыки не найдена.")
+        return 0, 0
+    own_index = index is None
+    if own_index:
+        index = LibraryIndex(get_app_data_dir() / cfg.get("LIBRARY_INDEX_FILE", "library_index.json"))
+        index.load()
+    log("=== Дополнение тегов библиотеки ===")
+    dup_name = cfg.get("DUPLICATES_SUBDIR", "_duplicates")
+    todo: list[Path] = []
+    for path in iter_audio_files(music_dir, dup_name):
+        if path.suffix.lower() not in (".mp3", ".flac"):
+            continue
+        entry = index.get(path)
+        if entry and entry.meta_tried and not force:
+            continue
+        todo.append(path)
+    if not todo:
+        log_ok("Все файлы уже обработаны.")
+        return 0, 0
+    log(f"Файлов к обработке: {len(todo)}")
+    total, updated = len(todo), 0
+    for i, path in enumerate(todo, 1):
+        if stop_event and stop_event.is_set():
+            log_warn("Остановлено. Обработанные файлы будут пропущены при следующем запуске.")
+            break
+        if progress_cb:
+            progress_cb(i - 1, total)
+        entry = index.get(path)
+        artist, title = _artist_title_for_file(path, entry)
+        if not title:
+            continue
+        if dry_run:
+            log_dry(f"  [dry-run] [{i}/{total}] {path.name}")
+            continue
+        duration = (entry.duration if entry and entry.duration else read_audio_duration(path))
+        meta = fetch_full_metadata(artist, title, duration)
+        if meta:
+            changed = write_full_tags(path, meta, only_missing=True)
+            if meta.get("cover_url") and not has_cover(path):
+                img = download_image(meta["cover_url"])
+                if img and len(img[0]) > 2000 and embed_cover(path, img):
+                    changed.append("обложка")
+            if changed:
+                updated += 1
+                log_ok(f"  [{i}/{total}] {path.name}: добавлено - {', '.join(changed)}")
+            else:
+                log(f"  [{i}/{total}] {path.name}: данные уже заполнены")
+        else:
+            log_warn(f"  [{i}/{total}] Не найдено в базах (пропуск): {path.name}")
+        try:
+            st = path.stat()
+        except OSError:
+            st = None
+        if entry is None:
+            entry = LibraryEntry(path=str(path))
+        entry.meta_tried = True
+        if st:
+            entry.size, entry.mtime = st.st_size, st.st_mtime
+        index.put(entry)
+        if own_index and i % 25 == 0:
+            index.save()
+        if progress_cb:
+            progress_cb(i, total)
+    if not dry_run and own_index:
+        index.save()
+    log_ok(f"Дополнение тегов завершено. Изменено файлов: {updated} из {total}.")
+    return total, updated
+
 
 def iter_audio_files(root: Path, dup_subdir: str = "_duplicates") -> Iterable[Path]:
     for dirpath, dirnames, filenames in os.walk(root):
@@ -723,6 +1194,7 @@ def index_single_file(path: Path, index: LibraryIndex, api_key: str = "",
                 write_tags(path, entry.artist, entry.title, entry.album, entry.year)
     entry.tags_ok = bool(entry.artist and entry.title)
     entry.tags_checked = True
+    entry.cover_tried = False
     entry.track_key = build_track_key(entry.artist, entry.title) if entry.tags_ok else ""
     entry.title_key = normalize_key(clean_title(entry.title or path.stem))
     index.put(entry)
@@ -818,11 +1290,6 @@ def _remove_duplicates(music_dir: Path, index: LibraryIndex, cfg: dict[str, Any]
     if not dry_run:
         index.save()
 
-
-# ---------------------------------------------------------------------------
-# yt-dlp: subprocess (из исходников) или встроенный модуль (в .exe)
-# ---------------------------------------------------------------------------
-
 def _cookie_attempts(cfg: dict[str, Any]) -> list[list[str]]:
     attempts: list[list[str]] = []
     browser = (cfg.get("BROWSER_FOR_COOKIES") or "").strip()
@@ -863,7 +1330,7 @@ def _run_ytdlp(cfg: dict[str, Any], tail_args: list[str], timeout: int = 300) ->
     if proxy:
         base += ["--proxy", proxy]
     base += ["--no-warnings", "--ignore-errors"]
-    # YouTube требует JavaScript-рантайм (deno/node) для расшифровки ссылок на форматы.
+    # YouTube требует JavaScript-рантайм (deno/node) для расшифровки ссылок на форматы. Чета сложно
     for runtime in ("deno", "node"):
         rt_path = resolve_binary(runtime)
         if rt_path:
@@ -1008,10 +1475,6 @@ def filter_new_tracks(tracks: list[dict[str, Any]], index: LibraryIndex, downloa
     return result
 
 
-# ---------------------------------------------------------------------------
-# Скачивание и тегирование
-# ---------------------------------------------------------------------------
-
 _FALLBACK_MARKERS = ("video unavailable", "not available in your country",
                      "requested format is not available", "unavailable", "blocked")
 
@@ -1065,7 +1528,7 @@ def download_track(track: dict[str, Any], music_dir: Path, index: LibraryIndex,
         log_err("  Файл после скачивания не найден.")
         return False
 
-    # Отпечаток нового файла: если такой звук уже есть - в _duplicates
+   
     fp, dur = compute_fingerprint(downloaded)
     if fp:
         for existing in index.active_entries():
@@ -1078,17 +1541,28 @@ def download_track(track: dict[str, Any], music_dir: Path, index: LibraryIndex,
     lookup_artist = clean_artist(track.get("artist", ""))
     lookup_title = clean_title(track.get("title", ""))
     real_dur = dur or read_audio_duration(downloaded) or float(track.get("duration") or 0)
-    meta = itunes_lookup(lookup_artist, lookup_title, real_dur)
-    time.sleep(API_PAUSE_SEC)
+    meta = fetch_full_metadata(lookup_artist, lookup_title, real_dur)
     if not meta:
         meta = musicbrainz_lookup(lookup_artist, lookup_title)
         time.sleep(API_PAUSE_SEC)
     album = (meta or {}).get("album") or ""
     year = (meta or {}).get("year") or ""
-    cover_url = (meta or {}).get("cover_url") or track.get("thumbnail") or ""
+    cover_url = (meta or {}).get("cover_url") or ""
     cover = download_image(cover_url) if cover_url else None
     if write_tags(downloaded, lookup_artist or "Unknown Artist", lookup_title, album, year, cover):
         log_ok(f"  Готово: {album or 'сингл'} {year}".strip())
+    if meta:
+        extra_fields = write_full_tags(downloaded, meta, only_missing=True)
+        if extra_fields:
+            log(f"  Теги: {', '.join(extra_fields)}")
+    # Проверка 1: обложка встроена? крч ищем во всех источниках.
+    if not has_cover(downloaded):
+        log_warn("  Обложки нет, ищу в других источниках...")
+        extra = find_cover(lookup_artist, lookup_title, real_dur, extra_urls=[track.get("thumbnail") or ""])
+        if extra and embed_cover(downloaded, extra):
+            log_ok("  Обложка добавлена из резервного источника.")
+        else:
+            log_warn("  Обложку найти не удалось.")
     index_single_file(downloaded, index, api_key="", dry_run=False)
     return True
 
@@ -1140,6 +1614,10 @@ def run_sync(cfg: dict[str, Any], dry_run: bool = False, limit: Optional[int] = 
     log("=== Этап 4: скачивание новинок ===")
     if not new_tracks:
         log_ok("Новых треков нет - коллекция актуальна.")
+        if not (stop_event and stop_event.is_set()):
+            run_cover_check(cfg, stop_event, progress_cb, dry_run=dry_run, index=index)
+            if not dry_run:
+                index.save()
         return 0
     if limit and limit > 0:
         new_tracks = new_tracks[:limit]
@@ -1168,6 +1646,11 @@ def run_sync(cfg: dict[str, Any], dry_run: bool = False, limit: Optional[int] = 
     if not dry_run:
         index.save()
     log_ok(f"Синхронизация завершена. Скачано: {ok} из {total}.")
+    # Проверка 2: проход по всей папке добавлю недостающие обложки, надо придумать что ещё потом сделать
+    if not (stop_event and stop_event.is_set()):
+        run_cover_check(cfg, stop_event, progress_cb, dry_run=dry_run, index=index)
+        if not dry_run:
+            index.save()
     return 0
 
 
