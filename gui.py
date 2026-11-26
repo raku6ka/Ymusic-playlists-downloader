@@ -12,8 +12,9 @@ import requests
 
 import sync_music as core
 
-APP_VERSION = "1.0.2"
-GITHUB_REPO = "raku6ka/YTMusicSync"
+APP_VERSION = "1.0.3"
+
+GITHUB_REPO = "raku6ka/Ymusic-playlists-downloader"
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
@@ -34,7 +35,7 @@ class YTMusicSyncApp(ctk.CTk):
         self._build_ui()
         core.set_gui_logger(self._on_log_message)
 
-       
+
         self.after(2000, self._start_background_checks)
 
 
@@ -51,7 +52,7 @@ class YTMusicSyncApp(ctk.CTk):
         )
         self.status_label.grid(row=0, column=0, sticky="w")
 
-        # кнопка будет обновления скрыта, пока GitHub не вернёт более свежий релиз
+
         self.update_btn = ctk.CTkButton(
             top_frame, text="Доступна новая версия! Скачать",
             fg_color="#2e7d32", hover_color="#1b5e20", height=28,
@@ -162,6 +163,12 @@ class YTMusicSyncApp(ctk.CTk):
         )
         self.meta_btn.pack(side="left")
 
+        self.overwrite_var = ctk.BooleanVar(value=False)
+        ctk.CTkCheckBox(
+            btn_frame, text="Исправление: перезаписать альбом и обложку (название и исполнитель не меняются)",
+            variable=self.overwrite_var,
+        ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(8, 0))
+
         self.progress = ctk.CTkProgressBar(self)
         self.progress.grid(row=4, column=0, padx=16, pady=(4, 6), sticky="ew")
         self.progress.set(0)
@@ -169,7 +176,7 @@ class YTMusicSyncApp(ctk.CTk):
         self.log_box = ctk.CTkTextbox(self, font=ctk.CTkFont(family="Consolas", size=12), state="disabled")
         self.log_box.grid(row=5, column=0, padx=16, pady=(0, 14), sticky="nsew")
 
-    
+
     def _get_cookies_text(self) -> str:
         cfile = core.get_app_data_dir() / core.COOKIES_FILE
         return "cookies.txt активен" if cfile.exists() else "cookies.txt не задан"
@@ -220,7 +227,7 @@ class YTMusicSyncApp(ctk.CTk):
             self.status_label.configure(text="Настройки сохранены")
             self._append_log("[OK] Настройки сохранены в %APPDATA%\\YTMusicSync\\config.json")
 
-    
+
     def _on_log_message(self, line: str, level: str) -> None:
         self.after(0, self._append_log, line)
 
@@ -235,9 +242,9 @@ class YTMusicSyncApp(ctk.CTk):
         self.after(0, self.progress.set, val)
         self.after(0, lambda: self.status_label.configure(text=f"Обработка треков: {current} из {total}"))
 
-    
+
     def _launch(self, job, status_text: str) -> None:
-        """Запускает задачу в отдельном потоке, интерфейс не зависает."""
+
         self.stop_event.clear()
         self.start_btn.configure(state="disabled")
         self.cover_btn.configure(state="disabled")
@@ -298,28 +305,41 @@ class YTMusicSyncApp(ctk.CTk):
             messagebox.showwarning("Не заполнено поле", "Сначала укажите папку для музыки.")
             return
         dry_run = bool(self.dry_run_var.get())
+        overwrite = bool(self.overwrite_var.get())
         if not dry_run:
-            ok = messagebox.askyesno(
-                "Дополнить теги библиотеки",
-                "Программа найдёт в интернете данные о каждом треке (альбом, исполнитель альбома, "
-                "номер трека и диска, жанр, год, издатель, авторские права, ISRC, BPM, обложку) "
-                "и ДОПИШЕТ их в теги ваших MP3/FLAC файлов в папке:\n\n"
-                f"{cfg['MUSIC_DIR']}\n\n"
-                "• Заполняются только пустые поля, существующие данные не перезаписываются.\n"
-                "• Файлы будут изменены. Рекомендуется сделать резервную копию.\n"
-                "• Для большой библиотеки это может занять долго. Процесс можно остановить "
-                "и продолжить позже: обработанные файлы пропускаются.\n\n"
-                "Продолжить?",
-                icon="warning",
-            )
-            if not ok:
+            if overwrite:
+                text = (
+                    "РЕЖИМ ИСПРАВЛЕНИЯ.\n\n"
+                    "Для каждого трека программа найдёт данные в интернете и ПЕРЕЗАПИШЕТ в файле: "
+                    "альбом, исполнителя альбома, номера трека и диска, жанр, год, издателя, "
+                    "авторские права, ISRC, BPM и ОБЛОЖКУ. Название и исполнитель не меняются.\n\n"
+                    f"Папка: {cfg['MUSIC_DIR']}\n\n"
+                    "• Прежние значения этих полей будут потеряны, включая ваши ручные правки.\n"
+                    "• Обязательно сделайте резервную копию библиотеки.\n"
+                    "• Процесс долгий; его можно остановить.\n\n"
+                    "Продолжить?"
+                )
+            else:
+                text = (
+                    "Программа найдёт в интернете данные о каждом треке (альбом, исполнитель альбома, "
+                    "номер трека и диска, жанр, год, издатель, авторские права, ISRC, BPM, обложка) "
+                    "и ДОПИШЕТ их в теги ваших MP3/FLAC файлов в папке:\n\n"
+                    f"{cfg['MUSIC_DIR']}\n\n"
+                    "• Заполняются только пустые поля, существующие данные не перезаписываются.\n"
+                    "• Файлы будут изменены. Рекомендуется сделать резервную копию.\n"
+                    "• Для большой библиотеки это может занять долго. Процесс можно остановить "
+                    "и продолжить позже: обработанные файлы пропускаются.\n\n"
+                    "Продолжить?"
+                )
+            if not messagebox.askyesno("Теги библиотеки", text, icon="warning"):
                 return
         core.save_config(cfg)
         job_cfg = dict(cfg)
         self._launch(
             lambda: core.run_metadata_enrich(job_cfg, stop_event=self.stop_event,
-                                             progress_cb=self._on_progress, dry_run=dry_run),
-            "Дополнение тегов...",
+                                             progress_cb=self._on_progress, dry_run=dry_run,
+                                             overwrite=overwrite),
+            "Исправление тегов..." if overwrite else "Дополнение тегов...",
         )
 
     def _stop_sync(self) -> None:
@@ -335,7 +355,7 @@ class YTMusicSyncApp(ctk.CTk):
         self.progress.set(1.0)
         self.status_label.configure(text="Готово")
 
-    
+
     def _start_background_checks(self) -> None:
         threading.Thread(target=self._check_github_release, daemon=True).start()
         cfg = self.cfg
@@ -381,7 +401,7 @@ class YTMusicSyncApp(ctk.CTk):
         r = YTMusicSyncApp._parse_version(remote)
         l = YTMusicSyncApp._parse_version(local)
         if r is None or l is None:
-            return False  # непонятный тег, не показываем кнопку
+            return False
         n = max(len(r), len(l))
         r += (0,) * (n - len(r))
         l += (0,) * (n - len(l))
